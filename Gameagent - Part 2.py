@@ -240,24 +240,6 @@ class GameState():
             raise ValueError("Incorrect move.")
         return f"{x1}{y1}{direction}"
 
-    def clone(self):
-        """Return a lightweight clone of this GameState suitable for search.
-
-        The clone shares immutable precomputed structures (neighbours, terminal_states)
-        but has independent bitboards and turn_to_move so make/unmake won't affect
-        the original state.
-        """
-        new = object.__new__(GameState)
-        new.board_width = self.board_width
-        new.board_height = self.board_height
-        new.white_bitboard = self.white_bitboard
-        new.black_bitboard = self.black_bitboard
-        new.turn_to_move = self.turn_to_move
-        new.board_mask = self.board_mask
-        new.neighbours = self.neighbours
-        new.terminal_states = self.terminal_states
-        return new
-
     def display(self): 
         # displays the board game at every move
         for y in range(1, self.board_height + 1):
@@ -292,7 +274,6 @@ class GameState():
 import time
 from math import inf
 import socket
-import sys
 
 class Engine:
     def __init__(self):
@@ -637,10 +618,8 @@ class Engine:
         # iterative deepen
         for depth in range(1, max_depth + 1):
             try:
-                # run search on a clone so an interrupted search doesn't mutate the real state
-                search_state = state.clone()
                 self._start_timer(time_limit_sec, safety_margin=safety_margin)
-                mv, val, nodes = self.choose_move_minimax(search_state, depth)
+                mv, val, nodes = self.choose_move_minimax(state, depth)
                 # completed depth successfully: record result
                 best_result = (mv, val, nodes)
             except TimeoutError:
@@ -655,10 +634,8 @@ class Engine:
         best_result = (None, 0.0, 0)
         for depth in range(1, max_depth + 1):
             try:
-                # run search on a clone so an interrupted search doesn't mutate the real state
-                search_state = state.clone()
                 self._start_timer(time_limit_sec, safety_margin=safety_margin)
-                mv, val, nodes = self.choose_move_alphabeta(search_state, depth)
+                mv, val, nodes = self.choose_move_alphabeta(state, depth)
                 best_result = (mv, val, nodes)
             except TimeoutError:
                 break
@@ -765,67 +742,8 @@ class Agent:
                 best_move, best_value, node_count = None, 0.0, 0
         if best_move is None:
             return
-
-        # Helper to check legality in the current real state without raising
-        def _is_move_valid(real_state, move):
-            try:
-                src, dst = move
-            except Exception:
-                return False
-            # source must be occupied by current player
-            if real_state.turn_to_move == 0:
-                if ((real_state.white_bitboard >> src) & 1) == 0:
-                    return False
-            else:
-                if ((real_state.black_bitboard >> src) & 1) == 0:
-                    return False
-            # destination must be a neighbour and empty
-            if dst not in real_state.neighbours[src].values():
-                return False
-            occupancy = (real_state.white_bitboard | real_state.black_bitboard) & real_state.board_mask
-            if ((occupancy >> dst) & 1) != 0:
-                return False
-            return True
-
-        # If the chosen move is invalid in the real state, choose a fallback using current legal moves
-        if not _is_move_valid(self.state, best_move):
-            print(f"[WARN] chosen move {best_move} invalid in real state; selecting fallback", file=sys.stderr)
-            legal_moves = list(self.state.legal_moves())
-            if not legal_moves:
-                return
-            # try to score legal moves using the engine heuristic if available
-            try:
-                scored = [(self.search._score_move(self.state, m), m) for m in legal_moves]
-                scored.sort(key=lambda x: x[0], reverse=(self.state.turn_to_move == 0))
-                best_move = scored[0][1]
-            except Exception:
-                best_move = legal_moves[0]
-
-        # final sanity check before applying
-        if not _is_move_valid(self.state, best_move):
-            print(f"[ERROR] no valid move available after fallback; aborting turn", file=sys.stderr)
-            return
-
         move_text = self.state.encode_moves(best_move)
-        try:
-            self.state.make(best_move)
-        except Exception as e:
-            # This should be rare because we validated, but guard anyway
-            print(f"[ERROR] failed to apply move {best_move}: {e}", file=sys.stderr)
-            # attempt one last fallback
-            legal = list(self.state.legal_moves())
-            for m in legal:
-                try:
-                    if _is_move_valid(self.state, m):
-                        move_text = self.state.encode_moves(m)
-                        self.state.make(m)
-                        best_move = m
-                        break
-                except Exception:
-                    continue
-            else:
-                print("[ERROR] could not recover a legal move; skipping turn", file=sys.stderr)
-                return
+        self.state.make(best_move)
         # record our move as a real-game position
         try:
             position_key = self.state.tt_key()
@@ -891,27 +809,4 @@ def bench_opening(depth_max=6):
         print(f"alphabeta,{row['depth']},{row['value']},{row['nodes']},{row['elapsed']},{row['nodes_per_sec']},{row['pv_move']}")
 
 if __name__ == "__main__":
-    import argparse
-    ap = argparse.ArgumentParser(description="Dynamic Connect-3 agent")
-    ap.add_argument("--host", default="156trlinux-1.ece.mcgill.ca")
-    ap.add_argument("--port", type=int, default=12345)
-    ap.add_argument("--game", required=True, help="game ID, e.g., game42")
-    ap.add_argument("--colour", required=True, choices=["white", "black"])
-    ap.add_argument("--depth", type=int, default=99, help="max depth cap for iterative deepening")
-    ap.add_argument("--time", type=float, default=10.0, help="seconds per move")
-    ap.add_argument("--safety", type=float, default=0.5, help="reserve this many seconds")
-    ap.add_argument("--bench", action="store_true", help="run benchmark instead of playing")
-    args = ap.parse_args()
-
-    if args.bench:
-        bench_opening(depth_max=args.depth)
-    else:
-        state = GameState(5, 4, 0, 0, 0)
-        engine = Engine()
-        # Part I fair defaults (you can flip these later):
-        engine.use_transposition_table = False
-        engine.move_ordering = "neutral"
-        agent = Agent(args.host, args.port, args.game, args.colour,
-                      args.depth, state, engine,
-                      time_limit_per_move=args.time, safety_margin=args.safety)
-        agent.run()
+    bench_opening(depth_max=6)
