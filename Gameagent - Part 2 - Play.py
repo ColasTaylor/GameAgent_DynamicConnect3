@@ -662,16 +662,20 @@ class Engine:
 # learns color from handshake and prescribes it to who you are --> and will create a board state with who's turn_to_move = 1 or 0
 
 class Agent:
-    def __init__(self, host, port, game_id, colour, depth, state, search):
+    def __init__(self, host, port, game_id, colour, depth, state, search, time_limit_per_move=10.0, safety_margin=0.5):
         self.host = host
         self.port = port
         self.game_id = game_id
         self.colour = colour.lower()
+        # keep the original depth parameter for backwards-compatibility but it is ignored for live play
         self.depth = depth
         self.state = state
         self.search = search
         self.side = 0 if self.colour == "white" else 1
         self.protocol = Protocol(self.host, self.port)
+        # time control for live play (time-only iterative deepening)
+        self.time_limit_per_move = float(time_limit_per_move)
+        self.safety_margin = float(safety_margin)
         # initialize real-game occurrence counts (threefold repetition detection)
         try:
             # search is expected to be an Engine instance
@@ -726,10 +730,16 @@ class Agent:
     def _play_our_turn(self):
         # use iterative deepening with a 10s per-move limit (0.5s safety margin)
         try:
-            best_move, best_value, node_count = self.search.choose_move_minimax_timed(self.state, max_depth=self.depth, time_limit_sec=10.0, safety_margin=0.5)
+            # Always ignore Part I static depth. Use time-only iterative deepening alpha-beta.
+            # We pass a very large max_depth so that the only limiter is the time budget.
+            best_move, best_value, node_count = self.search.choose_move_alphabeta_timed(
+                self.state, max_depth=9999, time_limit_sec=self.time_limit_per_move, safety_margin=self.safety_margin)
         except Exception:
             # fallback to single-depth call if timed method not available
-            best_move, best_value, node_count = self.search.choose_move_minimax(self.state, self.depth)
+            try:
+                best_move, best_value, node_count = self.search.choose_move_alphabeta(self.state, 1)
+            except Exception:
+                best_move, best_value, node_count = None, 0.0, 0
         if best_move is None:
             return
         move_text = self.state.encode_moves(best_move)
@@ -799,4 +809,27 @@ def bench_opening(depth_max=6):
         print(f"alphabeta,{row['depth']},{row['value']},{row['nodes']},{row['elapsed']},{row['nodes_per_sec']},{row['pv_move']}")
 
 if __name__ == "__main__":
-    bench_opening(depth_max=6)
+    import argparse
+    ap = argparse.ArgumentParser(description="Dynamic Connect-3 agent")
+    ap.add_argument("--host", default="156trlinux-1.ece.mcgill.ca")
+    ap.add_argument("--port", type=int, default=12345)
+    ap.add_argument("--game", required=True, help="game ID, e.g., game42")
+    ap.add_argument("--colour", required=True, choices=["white", "black"])
+    ap.add_argument("--depth", type=int, default=99, help="max depth cap for iterative deepening")
+    ap.add_argument("--time", type=float, default=10.0, help="seconds per move")
+    ap.add_argument("--safety", type=float, default=0.5, help="reserve this many seconds")
+    ap.add_argument("--bench", action="store_true", help="run benchmark instead of playing")
+    args = ap.parse_args()
+
+    if args.bench:
+        bench_opening(depth_max=args.depth)
+    else:
+        state = GameState(5, 4, 0, 0, 0)
+        engine = Engine()
+        # Part I fair defaults (you can flip these later):
+        engine.use_transposition_table = False
+        engine.move_ordering = "neutral"
+        agent = Agent(args.host, args.port, args.game, args.colour,
+                      args.depth, state, engine,
+                      time_limit_per_move=args.time, safety_margin=args.safety)
+        agent.run()
