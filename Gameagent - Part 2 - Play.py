@@ -597,8 +597,10 @@ class Engine:
             best_move = moves[0]
             for move in moves:
                 undo = state.make(move)
-                val = self.alphabeta_value(state, depth - 1, -inf, +inf)
-                state.unmake(undo)
+                try:
+                    val = self.alphabeta_value(state, depth - 1, -inf, +inf)
+                finally:
+                    state.unmake(undo)
                 if val > best_value:
                     best_value = val
                     best_move = move
@@ -608,8 +610,10 @@ class Engine:
             best_move = moves[0]
             for move in moves:
                 undo = state.make(move)
-                val = self.alphabeta_value(state, depth - 1, -inf, +inf)
-                state.unmake(undo)
+                try:
+                    val = self.alphabeta_value(state, depth - 1, -inf, +inf)
+                finally:
+                    state.unmake(undo)
                 if val < best_value:
                     best_value = val
                     best_move = move
@@ -815,46 +819,6 @@ class Agent:
                 best_move, best_value, node_count = None, 0.0, 0
         if best_move is None:
             return
-
-        def _handle_incoming_line(self, line):
-            """Decode and apply an incoming line from the server. Returns True if the caller
-            should stop the main loop (game over or threefold), False to continue.
-            """
-            try:
-                move = self.state.decode_moves(line)
-            except Exception:
-                # ignore unparsable lines
-                if self.verbose:
-                    print(f"[WARN] could not decode incoming line: {line!r}")
-                return False
-            # apply opponent move
-            try:
-                self.state.make(move)
-            except Exception as e:
-                # if opponent sent an invalid move, ignore it but warn when verbose
-                if self.verbose:
-                    print(f"[WARN] failed to apply opponent move {line!r}: {e}")
-                return False
-            # verbose: show received move and updated board
-            if self.verbose:
-                print(f"[RECV] {line.strip()}")
-                self.state.display()
-            # record opponent's move as a real-game position and check threefold
-            try:
-                position_key = self.state.tt_key()
-                occurrence_count = self.search.record_position_occurrence(position_key)
-                if occurrence_count >= 3:
-                    # threefold repetition reached -> draw
-                    return True
-            except Exception:
-                pass
-            # check terminal
-            tv = None
-            if hasattr(self.state, "terminal_value"):
-                tv = self.state.terminal_value()
-            if tv is not None:
-                return True
-            return False
 
         # Helper to check legality in the current real state without raising
         def _is_move_valid(real_state, move):
