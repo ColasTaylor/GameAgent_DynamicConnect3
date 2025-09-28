@@ -946,12 +946,17 @@ class Agent:
             if self._last_sent is not None and line.strip() == self._last_sent.strip():
                 self._last_sent = None
                 return
-            # otherwise, treat it as an opponent move that arrived immediately
-            stop_now = self._handle_incoming_line(line)
-            # clear last_sent since we've consumed an incoming line
-            self._last_sent = None
-            if stop_now:
+            # otherwise, treat it as an opponent move or noise that arrived immediately.
+            # Process it, but do NOT clear _last_sent here — a late echo may still arrive.
+            try:
+                applied, terminal = self._handle_incoming_line(line)
+            except Exception:
+                applied, terminal = (False, False)
+            # if the processed line ended the game, stop; otherwise return to avoid
+            # making further moves during this _play_our_turn invocation.
+            if terminal:
                 return
+            return
 
 class Protocol:
     
