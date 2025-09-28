@@ -728,6 +728,14 @@ class Agent:
         except Exception:
             pass
 
+    def _canon(self, txt: str):
+        """Return canonical move text (e.g. '11E') or None if txt isn't a move."""
+        try:
+            mv = self.state.decode_moves(txt)
+            return self.state.encode_moves(mv)
+        except Exception:
+            return None
+
     def run(self):
         self.protocol.connect()
         self.protocol.send_line(f"{self.game_id} {self.colour}")
@@ -752,8 +760,10 @@ class Agent:
                 # ignore empty/garbage and keep waiting
                 continue
 
-            # skip server echoes of our own send if present
-            if getattr(self, '_last_sent', None) is not None and line.strip() == self._last_sent.strip():
+            # skip server echoes of our own send if present (use canonical comparison)
+            if self._last_sent is not None and self._canon(line) == self._canon(self._last_sent):
+                if self.verbose:
+                    print(f"[SKIP ECHO] {line.strip()}")
                 # consumed our own echo; clear and continue waiting for opponent
                 self._last_sent = None
                 continue
@@ -906,8 +916,10 @@ class Agent:
             line = None
 
         if line:
-            # if it's an echo of our own move, clear the sentinel and done
-            if self._last_sent is not None and line.strip() == self._last_sent.strip():
+            # if it's an echo of our own move, clear the sentinel and done (use canonical compare)
+            if self._last_sent is not None and self._canon(line) == self._canon(self._last_sent):
+                if self.verbose:
+                    print(f"[ECHO] {line.strip()}")
                 self._last_sent = None
                 return
             # otherwise, treat it as an opponent move or noise that arrived immediately.
@@ -916,10 +928,13 @@ class Agent:
                 applied, terminal = self._handle_incoming_line(line)
             except Exception:
                 applied, terminal = (False, False)
-            # if the processed line ended the game, stop; otherwise return to avoid
-            # making further moves during this _play_our_turn invocation.
+            # if the processed line ended the game, stop
             if terminal:
                 return
+            # If it was a real opponent move that we applied, it is now our turn again.
+            # Play immediately to avoid stalling in this invocation.
+            if applied:
+                self._play_our_turn()
             return
 
 class Protocol:
