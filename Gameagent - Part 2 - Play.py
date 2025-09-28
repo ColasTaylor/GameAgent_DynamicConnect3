@@ -495,7 +495,8 @@ class Agent:
             self.proto.send_line(text); return
         self.proto.send_line(text); self._last_sent=text
 
-# ---------------- Main ----------------
+# Main
+
 if __name__ == "__main__":
     import argparse
     ap=argparse.ArgumentParser(description="Dynamic Connect-3 agent (gameplay)")
@@ -507,19 +508,24 @@ if __name__ == "__main__":
     ap.add_argument("--safety", type=float, default=0.5)
     ap.add_argument("--algo", choices=["ab","minimax"], default="ab")
     ap.add_argument("--heuristic", choices=["naive","improved"], default="improved")
-    ap.add_argument("--weights", type=str, help="path to JSON weights for improved eval")
+    ap.add_argument("--weights", type=str, help="JSON file with learned weights for improved eval")
     ap.add_argument("--verbose", action="store_true")
     args=ap.parse_args()
 
-    eng=Engine()
+    eng = Engine()
     eng.algo = args.algo
     eng.eval_mode = args.heuristic
-    eng.move_ordering = "best-first"  # default for both algorithms
-    if args.heuristic=="improved" and args.weights:
-        with open(args.weights,"r",encoding="utf-8") as f:
-            w=json.load(f)
-        for k,v in w.items():
-            if k in eng.theta: eng.theta[k]=float(v)
+    eng.move_ordering = "best-first"
+    if args.heuristic == "improved" and args.weights:
+        import json
+        with open(args.weights, "r", encoding="utf-8") as f:
+            w = json.load(f)
+        if hasattr(eng, "set_weights"):
+            eng.set_weights(**w)
+        else:
+            for k, v in w.items():
+                if k in eng.theta:
+                    eng.theta[k] = float(v)
 
     agent=Agent(args.host,args.port,args.game,args.colour,eng,time_limit=args.time,safety=args.safety,verbose=args.verbose)
     agent.run()
