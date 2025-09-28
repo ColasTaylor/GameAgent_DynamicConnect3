@@ -4,7 +4,7 @@ import socket, sys, time, json
 from math import inf
 from itertools import combinations, permutations
 
-# ---------------- Game state ----------------
+# Game state
 class GameState:
     def __init__(self, width, height, white_init=0, black_init=0, turn=0):
         self.board_width, self.board_height = width, height
@@ -124,6 +124,16 @@ class GameState:
 
     def tt_key(self):
         return (self.white_bitboard,self.black_bitboard,self.turn_to_move,self.board_width,self.board_height)
+
+    def clone(self):
+        c = GameState(self.board_width, self.board_height,
+                      self.white_bitboard, self.black_bitboard,
+                      self.turn_to_move)
+        # reuse precomputed tables to stay fast
+        c.neighbours = self.neighbours
+        c.terminal_states = self.terminal_states
+        c.board_mask = self.board_mask
+        return c
 
     def display(self):
         for y in range(1,self.board_height+1):
