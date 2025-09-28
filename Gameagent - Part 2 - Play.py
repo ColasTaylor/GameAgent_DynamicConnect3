@@ -785,7 +785,19 @@ class Agent:
         Returns (applied: bool, terminal: bool).
         applied=True when a legal move was decoded and applied to the real state.
         terminal=True when that move produced a terminal position or threefold repetition.
+        This function treats canonical matches to our last sent move as echoes and skips them.
         """
+        canon_line = self._canon(line)
+
+        # 1) Late echo before decode/make (handles odd whitespace/case)
+        if self._last_sent is not None and canon_line is not None and \
+           canon_line == self._canon(self._last_sent):
+            if self.verbose:
+                print(f"[SKIP ECHO-LATE] {line.strip()}")
+            self._last_sent = None
+            return (False, False)
+
+        # 2) Decode
         try:
             move = self.state.decode_moves(line)
         except Exception:
@@ -793,9 +805,17 @@ class Agent:
                 print(f"[WARN] could not decode incoming line: {line!r}")
             return (False, False)
 
+        # 3) Apply; if it fails, re-check for late echo again
         try:
             self.state.make(move)
         except Exception as e:
+            # Treat failing apply as a possible late echo (destination occupied etc.)
+            if self._last_sent is not None and canon_line is not None and \
+               canon_line == self._canon(self._last_sent):
+                if self.verbose:
+                    print(f"[SKIP ECHO-LATE(APPLY)] {line.strip()}")
+                self._last_sent = None
+                return (False, False)
             if self.verbose:
                 print(f"[WARN] failed to apply opponent move {line!r}: {e}")
             return (False, False)
