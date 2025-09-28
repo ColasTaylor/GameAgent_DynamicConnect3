@@ -685,7 +685,7 @@ class Engine:
 # learns color from handshake and prescribes it to who you are --> and will create a board state with who's turn_to_move = 1 or 0
 
 class Agent:
-    def __init__(self, host, port, game_id, colour, depth, state, search, time_limit_per_move=10.0, safety_margin=0.5):
+    def __init__(self, host, port, game_id, colour, depth, state, search, time_limit_per_move=10.0, safety_margin=0.5, verbose=False):
         self.host = host
         self.port = port
         self.game_id = game_id
@@ -699,6 +699,8 @@ class Agent:
         # time control for live play (time-only iterative deepening)
         self.time_limit_per_move = float(time_limit_per_move)
         self.safety_margin = float(safety_margin)
+        # verbose logging: print moves and board after each applied move when True
+        self.verbose = bool(verbose)
         # initialize real-game occurrence counts (threefold repetition detection)
         try:
             # search is expected to be an Engine instance
@@ -732,7 +734,18 @@ class Agent:
                 move = self.state.decode_moves(line)
             except Exception:
                 continue
-            self.state.make(move)
+            # apply opponent move
+            try:
+                self.state.make(move)
+            except Exception as e:
+                # if opponent sent an invalid move, ignore it
+                if self.verbose:
+                    print(f"[WARN] failed to apply opponent move {line!r}: {e}")
+                continue
+            # verbose: show received move and updated board
+            if self.verbose:
+                print(f"[RECV] {line.strip()}")
+                self.state.display()
             # record opponent's move as a real-game position
             try:
                 position_key = self.state.tt_key()
@@ -826,6 +839,11 @@ class Agent:
             else:
                 print("[ERROR] could not recover a legal move; skipping turn", file=sys.stderr)
                 return
+        # verbose: show our move and updated board
+        if self.verbose:
+            print(f"[PLAY] {move_text}")
+            self.state.display()
+
         # record our move as a real-game position
         try:
             position_key = self.state.tt_key()
@@ -901,6 +919,7 @@ if __name__ == "__main__":
     ap.add_argument("--time", type=float, default=10.0, help="seconds per move")
     ap.add_argument("--safety", type=float, default=0.5, help="reserve this many seconds")
     ap.add_argument("--bench", action="store_true", help="run benchmark instead of playing")
+    ap.add_argument("--verbose", action="store_true", help="print board and moves during play")
     args = ap.parse_args()
 
     if args.bench:
@@ -913,5 +932,6 @@ if __name__ == "__main__":
         engine.move_ordering = "neutral"
         agent = Agent(args.host, args.port, args.game, args.colour,
                       args.depth, state, engine,
-                      time_limit_per_move=args.time, safety_margin=args.safety)
+                      time_limit_per_move=args.time, safety_margin=args.safety,
+                      verbose=args.verbose)
         agent.run()
