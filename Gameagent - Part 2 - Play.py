@@ -353,8 +353,10 @@ class Engine:
             best_move = moves[0]
             for move in moves:
                 undo_token = state.make(move)
-                child_value = self.minimax_value(state, depth - 1)
-                state.unmake(undo_token)
+                try:
+                    child_value = self.minimax_value(state, depth - 1)
+                finally:
+                    state.unmake(undo_token)
                 if child_value > best_value:
                     best_value = child_value
                     best_move = move
@@ -365,8 +367,10 @@ class Engine:
             best_move = moves[0]
             for move in moves:
                 undo_token = state.make(move)
-                child_value = self.minimax_value(state, depth - 1)
-                state.unmake(undo_token)
+                try:
+                    child_value = self.minimax_value(state, depth - 1)
+                finally:
+                    state.unmake(undo_token)
                 if child_value < best_value:
                     best_value = child_value
                     best_move = move
@@ -541,8 +545,10 @@ class Engine:
             best_move = moves[0]
             for move in moves:
                 undo = state.make(move)
-                val = self.alphabeta_value(state, depth - 1, alpha, beta)
-                state.unmake(undo)
+                try:
+                    val = self.alphabeta_value(state, depth - 1, alpha, beta)
+                finally:
+                    state.unmake(undo)
                 if val > best_value:
                     best_value = val
                     best_move = move
@@ -562,8 +568,10 @@ class Engine:
             best_move = moves[0]
             for move in moves:
                 undo = state.make(move)
-                val = self.alphabeta_value(state, depth - 1, alpha, beta)
-                state.unmake(undo)
+                try:
+                    val = self.alphabeta_value(state, depth - 1, alpha, beta)
+                finally:
+                    state.unmake(undo)
                 if val < best_value:
                     best_value = val
                     best_move = move
@@ -634,36 +642,42 @@ class Engine:
         Returns (best_move, best_value, nodes) where nodes are from the last completed depth.
         """
         best_result = (None, 0.0, 0)
-        # iterative deepen
+        deadline = time.perf_counter() + max(0.0, time_limit_sec - safety_margin)
         for depth in range(1, max_depth + 1):
             try:
+                # set absolute deadline for this entire move
+                self.stop_time = deadline
                 # run search on a clone so an interrupted search doesn't mutate the real state
                 search_state = state.clone()
-                self._start_timer(time_limit_sec, safety_margin=safety_margin)
                 mv, val, nodes = self.choose_move_minimax(search_state, depth)
                 # completed depth successfully: record result
                 best_result = (mv, val, nodes)
+                if time.perf_counter() >= deadline:
+                    break
             except TimeoutError:
                 # time expired during this depth; return last successful result
                 break
             finally:
-                self._clear_timer()
+                self.stop_time = None
         return best_result
 
     def choose_move_alphabeta_timed(self, state, max_depth=6, time_limit_sec=10.0, safety_margin=0.5):
         """Iterative deepening alpha-beta with time control."""
         best_result = (None, 0.0, 0)
+        deadline = time.perf_counter() + max(0.0, time_limit_sec - safety_margin)
         for depth in range(1, max_depth + 1):
             try:
+                self.stop_time = deadline
                 # run search on a clone so an interrupted search doesn't mutate the real state
                 search_state = state.clone()
-                self._start_timer(time_limit_sec, safety_margin=safety_margin)
                 mv, val, nodes = self.choose_move_alphabeta(search_state, depth)
                 best_result = (mv, val, nodes)
+                if time.perf_counter() >= deadline:
+                    break
             except TimeoutError:
                 break
             finally:
-                self._clear_timer()
+                self.stop_time = None
         return best_result
 
     # --- helpers for threefold-repetition / real-game occurrence counting ---
@@ -701,6 +715,8 @@ class Agent:
         self.safety_margin = float(safety_margin)
         # verbose logging: print moves and board after each applied move when True
         self.verbose = bool(verbose)
+        # track last sent move text to detect/skip server echoes
+        self._last_sent = None
         # initialize real-game occurrence counts (threefold repetition detection)
         try:
             # search is expected to be an Engine instance
@@ -730,35 +746,15 @@ class Agent:
                 break
             if not line:
                 break
-            try:
-                move = self.state.decode_moves(line)
-            except Exception:
+            # skip server echoes of our own send if present
+            if getattr(self, '_last_sent', None) is not None and line.strip() == self._last_sent.strip():
+                # consumed our own echo; clear and continue waiting for opponent
+                self._last_sent = None
                 continue
-            # apply opponent move
-            try:
-                self.state.make(move)
-            except Exception as e:
-                # if opponent sent an invalid move, ignore it
-                if self.verbose:
-                    print(f"[WARN] failed to apply opponent move {line!r}: {e}")
-                continue
-            # verbose: show received move and updated board
-            if self.verbose:
-                print(f"[RECV] {line.strip()}")
-                self.state.display()
-            # record opponent's move as a real-game position
-            try:
-                position_key = self.state.tt_key()
-                occurrence_count = self.search.record_position_occurrence(position_key)
-                if occurrence_count >= 3:
-                    # threefold repetition reached -> draw
-                    break
-            except Exception:
-                pass
-            tv = None
-            if hasattr(self.state, "terminal_value"):
-                tv = self.state.terminal_value()
-            if tv is not None:
+
+            # handle an incoming line from opponent (decode, apply, record)
+            stop_now = self._handle_incoming_line(line)
+            if stop_now:
                 break
             self._play_our_turn()
         self.protocol.close()
@@ -778,6 +774,46 @@ class Agent:
                 best_move, best_value, node_count = None, 0.0, 0
         if best_move is None:
             return
+
+        def _handle_incoming_line(self, line):
+            """Decode and apply an incoming line from the server. Returns True if the caller
+            should stop the main loop (game over or threefold), False to continue.
+            """
+            try:
+                move = self.state.decode_moves(line)
+            except Exception:
+                # ignore unparsable lines
+                if self.verbose:
+                    print(f"[WARN] could not decode incoming line: {line!r}")
+                return False
+            # apply opponent move
+            try:
+                self.state.make(move)
+            except Exception as e:
+                # if opponent sent an invalid move, ignore it but warn when verbose
+                if self.verbose:
+                    print(f"[WARN] failed to apply opponent move {line!r}: {e}")
+                return False
+            # verbose: show received move and updated board
+            if self.verbose:
+                print(f"[RECV] {line.strip()}")
+                self.state.display()
+            # record opponent's move as a real-game position and check threefold
+            try:
+                position_key = self.state.tt_key()
+                occurrence_count = self.search.record_position_occurrence(position_key)
+                if occurrence_count >= 3:
+                    # threefold repetition reached -> draw
+                    return True
+            except Exception:
+                pass
+            # check terminal
+            tv = None
+            if hasattr(self.state, "terminal_value"):
+                tv = self.state.terminal_value()
+            if tv is not None:
+                return True
+            return False
 
         # Helper to check legality in the current real state without raising
         def _is_move_valid(real_state, move):
@@ -854,11 +890,27 @@ class Agent:
                 return
         except Exception:
             pass
+        # remember what we sent so we can detect server echoes
         self.protocol.send_line(move_text)
+        self._last_sent = move_text
+
+        # try a very short non-blocking read to drain an immediate echo from the server
         try:
-            _ = self.protocol.recv_line(10.0)
+            line = self.protocol.recv_line(0.2)
         except Exception:
-            pass
+            line = None
+
+        if line:
+            # if it's an echo of our own move, clear the sentinel and done
+            if self._last_sent is not None and line.strip() == self._last_sent.strip():
+                self._last_sent = None
+                return
+            # otherwise, treat it as an opponent move that arrived immediately
+            stop_now = self._handle_incoming_line(line)
+            # clear last_sent since we've consumed an incoming line
+            self._last_sent = None
+            if stop_now:
+                return
 
 class Protocol:
     
